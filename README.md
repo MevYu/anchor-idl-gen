@@ -110,6 +110,10 @@ var VaultStateDiscriminator = [8]byte{0xe4, 0xc4, 0x52, 0xa5, ...}
 
 // MatchAccount returns the account name if data starts with its discriminator.
 func MatchAccount(data []byte) string { ... }
+
+// UnmarshalVaultState verifies the discriminator and Borsh-decodes the
+// remainder of data into a VaultState value.
+func UnmarshalVaultState(data []byte) (*VaultState, error) { ... }
 ```
 
 ### `errors.go`
@@ -125,12 +129,16 @@ func ErrorByCode(code uint32) error { ... }
 ### `events.go`
 
 ```go
-type DepositedEvent struct {
+type Deposited struct {
     Depositor solana.PublicKey
     Amount    uint64
 }
 
 var DepositedDiscriminator = [8]byte{0x6f, 0x8d, 0x1a, 0x2d, ...}
+
+// UnmarshalDeposited verifies the discriminator (if present) and
+// Borsh-decodes the payload emitted by the program.
+func UnmarshalDeposited(data []byte) (*Deposited, error) { ... }
 ```
 
 ### `pda.go`
@@ -165,6 +173,24 @@ const (
     DirectionUp   Direction = 0
     DirectionDown Direction = 1
 )
+```
+
+Data-carrying enums become a sealed interface with one struct per variant
+and an `EnumTag()` method used by the generated Borsh encoder:
+
+```go
+type Action interface {
+    isAction()
+    EnumTag() uint8
+}
+
+type Action_Move struct { Steps uint64 }
+type Action_Speak struct { Msg string }
+
+func (*Action_Move)  isAction()          {}
+func (*Action_Move)  EnumTag() uint8     { return 0 }
+func (*Action_Speak) isAction()          {}
+func (*Action_Speak) EnumTag() uint8     { return 1 }
 ```
 
 ## Type mapping

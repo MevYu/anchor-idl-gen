@@ -38,7 +38,7 @@ func TestGenerateEvents_TypedStructs(t *testing.T) {
 	if !strings.Contains(got, "IncrementedDiscriminator = [8]byte{0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44}") {
 		t.Errorf("IncrementedDiscriminator mismatch: %s", got)
 	}
-	if !strings.Contains(got, `import "github.com/cielu/solana-go"`) {
+	if !strings.Contains(got, `"github.com/cielu/solana-go"`) {
 		t.Errorf("solana import missing for pubkey-bearing event: %s", got)
 	}
 }

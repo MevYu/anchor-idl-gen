@@ -18,8 +18,12 @@ import (
 // The generated Data() method uses Borsh encoding (little-endian
 // integers, 4-byte length-prefixed strings and vecs, option tags).
 // Defined-type arguments are encoded by recursively expanding their
-// fields from idl.Types; if a referenced type is not found the
-// generator returns an error.
+// fields from idl.Types; data-carrying enum arguments are encoded
+// via the sealed-interface helpers emitted by GenerateTypes.
+//
+// Optional instruction accounts use *solana.PublicKey so callers can
+// pass nil to omit them; the generated Accounts() slice skips nil
+// optional accounts rather than emitting an all-zero meta.
 //
 // If the IDL carries a program address, a ProgramAddress package var
 // is emitted so callers can reference it without hard-coding the key.
@@ -53,11 +57,15 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 		body.WriteString("}\n\n")
 
 		// Builder struct: one field per account, then one per arg.
+		writeDocs(&body, ix.Docs, "")
 		fmt.Fprintf(&body, "// %sInstruction builds the %s instruction.\n", name, name)
 		fmt.Fprintf(&body, "type %sInstruction struct {\n", name)
 		for _, acc := range ix.Accounts {
+			writeDocs(&body, acc.Docs, "\t")
 			var tag string
 			switch {
+			case acc.Optional:
+				tag = " // optional"
 			case acc.Signer && acc.Writable:
 				tag = " // signer, writable"
 			case acc.Signer:
@@ -65,9 +73,14 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 			case acc.Writable:
 				tag = " // writable"
 			}
-			fmt.Fprintf(&body, "\t%s solana.PublicKey%s\n", goName(acc.Name), tag)
+			typ := "solana.PublicKey"
+			if acc.Optional {
+				typ = "*solana.PublicKey"
+			}
+			fmt.Fprintf(&body, "\t%s %s%s\n", goName(acc.Name), typ, tag)
 		}
 		for _, arg := range ix.Args {
+			writeDocs(&body, arg.Docs, "\t")
 			gt, err := goTypeFor(arg.Type)
 			if err != nil {
 				return fmt.Errorf("instruction %s arg %s: %w", ix.Name, arg.Name, err)
@@ -86,14 +99,23 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 
 		// Accounts method.
 		fmt.Fprintf(&body, "// Accounts returns account metas for the %s instruction in\n", name)
-		fmt.Fprintf(&body, "// the positional order the program expects.\n")
+		fmt.Fprintf(&body, "// the positional order the program expects. Optional accounts\n")
+		fmt.Fprintf(&body, "// that are nil are skipped.\n")
 		fmt.Fprintf(&body, "func (ix *%sInstruction) Accounts() []*solana.AccountMeta {\n", name)
-		fmt.Fprintf(&body, "\treturn []*solana.AccountMeta{\n")
+		fmt.Fprintf(&body, "\tmetas := make([]*solana.AccountMeta, 0, %d)\n", len(ix.Accounts))
 		for _, acc := range ix.Accounts {
-			fmt.Fprintf(&body, "\t\tsolana.NewAccountMeta(ix.%s, %v, %v),\n",
-				goName(acc.Name), acc.Signer, acc.Writable)
+			fieldName := goName(acc.Name)
+			if acc.Optional {
+				fmt.Fprintf(&body, "\tif ix.%s != nil {\n", fieldName)
+				fmt.Fprintf(&body, "\t\tmetas = append(metas, solana.NewAccountMeta(*ix.%s, %v, %v))\n",
+					fieldName, acc.Signer, acc.Writable)
+				fmt.Fprintf(&body, "\t}\n")
+			} else {
+				fmt.Fprintf(&body, "\tmetas = append(metas, solana.NewAccountMeta(ix.%s, %v, %v))\n",
+					fieldName, acc.Signer, acc.Writable)
+			}
 		}
-		fmt.Fprintf(&body, "\t}\n}\n\n")
+		fmt.Fprintf(&body, "\treturn metas\n}\n\n")
 
 		// Data method: discriminator + Borsh-encoded args.
 		fmt.Fprintf(&body, "// Data returns the Borsh-encoded instruction payload: 8-byte\n")
@@ -102,7 +124,7 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 		fmt.Fprintf(&body, "\tvar buf bytes.Buffer\n")
 		fmt.Fprintf(&body, "\tbuf.Write(%sDiscriminator[:])\n", name)
 		for _, arg := range ix.Args {
-			if err := emitBorshWrite(&body, "ix."+goName(arg.Name), arg.Type, "\t", typeDefs); err != nil {
+			if err := emitBorshWrite(&body, "buf", "ix."+goName(arg.Name), arg.Type, "\t", typeDefs); err != nil {
 				return fmt.Errorf("instruction %s arg %s: %w", ix.Name, arg.Name, err)
 			}
 		}
@@ -110,14 +132,14 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 	}
 
 	bodyStr := body.String()
-	needsBinary := strings.Contains(bodyStr, "binary.LittleEndian")
+	needsBinaryPkg := strings.Contains(bodyStr, "binary.LittleEndian")
 
 	var header bytes.Buffer
 	header.WriteString(fileHeader())
 	fmt.Fprintf(&header, "package %s\n\n", pkgName)
 	header.WriteString("import (\n")
 	header.WriteString("\t\"bytes\"\n")
-	if needsBinary {
+	if needsBinaryPkg {
 		header.WriteString("\t\"encoding/binary\"\n")
 	}
 	header.WriteString("\n\tsolana \"github.com/cielu/solana-go\"\n")
@@ -130,92 +152,4 @@ func GenerateInstructions(w io.Writer, pkgName string, idl *IDL) error {
 	}
 	_, err = w.Write(formatted)
 	return err
-}
-
-// emitBorshWrite appends Go statements to buf that Borsh-encode val
-// (a Go expression of the given IDL type) into the local bytes.Buffer
-// variable named "buf". indent is prepended to each statement line.
-func emitBorshWrite(buf *bytes.Buffer, val string, t TypeRef, indent string, typeDefs map[string]TypeBody) error {
-	switch {
-	case t.Primitive != "":
-		return emitBorshPrimitive(buf, val, t.Primitive, indent)
-	case t.Vec != nil:
-		fmt.Fprintf(buf, "%s{\n", indent)
-		fmt.Fprintf(buf, "%svar _l [4]byte\n", indent)
-		fmt.Fprintf(buf, "%sbinary.LittleEndian.PutUint32(_l[:], uint32(len(%s)))\n", indent, val)
-		fmt.Fprintf(buf, "%sbuf.Write(_l[:])\n", indent)
-		fmt.Fprintf(buf, "%sfor _, _elem := range %s {\n", indent, val)
-		if err := emitBorshWrite(buf, "_elem", *t.Vec, indent+"\t", typeDefs); err != nil {
-			return err
-		}
-		fmt.Fprintf(buf, "%s}\n", indent)
-		fmt.Fprintf(buf, "%s}\n", indent)
-	case t.Option != nil:
-		fmt.Fprintf(buf, "%sif %s == nil {\n", indent, val)
-		fmt.Fprintf(buf, "%s\tbuf.WriteByte(0)\n", indent)
-		fmt.Fprintf(buf, "%s} else {\n", indent)
-		fmt.Fprintf(buf, "%s\tbuf.WriteByte(1)\n", indent)
-		if err := emitBorshWrite(buf, "*"+val, *t.Option, indent+"\t", typeDefs); err != nil {
-			return err
-		}
-		fmt.Fprintf(buf, "%s}\n", indent)
-	case t.Array != nil:
-		fmt.Fprintf(buf, "%sfor _, _elem := range %s {\n", indent, val)
-		if err := emitBorshWrite(buf, "_elem", *t.Array.Element, indent+"\t", typeDefs); err != nil {
-			return err
-		}
-		fmt.Fprintf(buf, "%s}\n", indent)
-	case t.Defined != "":
-		td, ok := typeDefs[t.Defined]
-		if !ok {
-			return fmt.Errorf("undefined type %q referenced in instruction arg", t.Defined)
-		}
-		if td.Kind != "struct" {
-			return fmt.Errorf("defined type %q is %q; only struct args are supported for inline encoding", t.Defined, td.Kind)
-		}
-		for _, f := range td.Fields {
-			if err := emitBorshWrite(buf, val+"."+goName(f.Name), f.Type, indent, typeDefs); err != nil {
-				return fmt.Errorf("field %s of %s: %w", f.Name, t.Defined, err)
-			}
-		}
-	default:
-		return fmt.Errorf("empty type reference")
-	}
-	return nil
-}
-
-// emitBorshPrimitive appends the single Borsh-encoding statement for
-// a primitive IDL type into buf.
-func emitBorshPrimitive(buf *bytes.Buffer, val, prim, indent string) error {
-	switch prim {
-	case "u8":
-		fmt.Fprintf(buf, "%sbuf.WriteByte(%s)\n", indent, val)
-	case "i8":
-		fmt.Fprintf(buf, "%sbuf.WriteByte(byte(%s))\n", indent, val)
-	case "u16":
-		fmt.Fprintf(buf, "%s{\nvar _b [2]byte\nbinary.LittleEndian.PutUint16(_b[:], %s)\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "i16":
-		fmt.Fprintf(buf, "%s{\nvar _b [2]byte\nbinary.LittleEndian.PutUint16(_b[:], uint16(%s))\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "u32":
-		fmt.Fprintf(buf, "%s{\nvar _b [4]byte\nbinary.LittleEndian.PutUint32(_b[:], %s)\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "i32":
-		fmt.Fprintf(buf, "%s{\nvar _b [4]byte\nbinary.LittleEndian.PutUint32(_b[:], uint32(%s))\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "u64":
-		fmt.Fprintf(buf, "%s{\nvar _b [8]byte\nbinary.LittleEndian.PutUint64(_b[:], %s)\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "i64":
-		fmt.Fprintf(buf, "%s{\nvar _b [8]byte\nbinary.LittleEndian.PutUint64(_b[:], uint64(%s))\nbuf.Write(_b[:])\n}\n", indent, val)
-	case "u128", "i128":
-		fmt.Fprintf(buf, "%sbuf.Write(%s[:])\n", indent, val)
-	case "bool":
-		fmt.Fprintf(buf, "%sif %s {\nbuf.WriteByte(1)\n} else {\nbuf.WriteByte(0)\n}\n", indent, val)
-	case "string":
-		fmt.Fprintf(buf, "%s{\nvar _l [4]byte\nbinary.LittleEndian.PutUint32(_l[:], uint32(len(%s)))\nbuf.Write(_l[:])\nbuf.WriteString(%s)\n}\n", indent, val, val)
-	case "bytes":
-		fmt.Fprintf(buf, "%s{\nvar _l [4]byte\nbinary.LittleEndian.PutUint32(_l[:], uint32(len(%s)))\nbuf.Write(_l[:])\nbuf.Write(%s)\n}\n", indent, val, val)
-	case "pubkey", "publicKey":
-		fmt.Fprintf(buf, "%sbuf.Write(%s[:])\n", indent, val)
-	default:
-		return fmt.Errorf("unknown primitive type %q", prim)
-	}
-	return nil
 }

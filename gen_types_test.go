@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,22 +85,41 @@ func TestGoTypeFor_Composites(t *testing.T) {
 	}
 }
 
-func TestGenerateTypes_DataCarryingEnumRejected(t *testing.T) {
+func TestGenerateTypes_DataCarryingEnum(t *testing.T) {
 	idl := &IDL{
 		Types: []TypeDef{
 			{
-				Name: "Weird",
+				Name: "Choice",
 				Type: TypeBody{
 					Kind: "enum",
 					Variants: []EnumVariant{
-						{Name: "WithData", Fields: []FieldDef{{Name: "x", Type: TypeRef{Primitive: "u64"}}}},
+						{Name: "Nothing"},
+						{Name: "Some", Fields: []FieldDef{{Name: "value", Type: TypeRef{Primitive: "u64"}}}},
 					},
 				},
 			},
 		},
 	}
 	var buf bytes.Buffer
-	if err := GenerateTypes(&buf, "p", idl); err == nil {
-		t.Fatal("expected error for data-carrying enum variant")
+	if err := GenerateTypes(&buf, "p", idl); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	got := buf.String()
+
+	// Sealed interface + per-variant structs with EnumTag().
+	for _, want := range []string{
+		"type Choice interface",
+		"isChoice()",
+		"EnumTag() uint8",
+		"type Choice_Nothing struct",
+		"type Choice_Some struct",
+		"Value uint64",
+		") isChoice()",
+		"EnumTag() uint8 { return 0 }",
+		"EnumTag() uint8 { return 1 }",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
 	}
 }

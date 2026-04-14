@@ -35,9 +35,14 @@ func GenerateErrors(w io.Writer, pkgName string, idl *IDL) error {
 	fmt.Fprintf(&body, "}\n\n")
 
 	for _, e := range idl.Errors {
-		fmt.Fprintf(&body, "// Err%s corresponds to the Anchor error code %d.\n", goName(e.Name), e.Code)
+		name := goName(e.Name)
+		fmt.Fprintf(&body, "// Err%s corresponds to the Anchor error code %d.", name, e.Code)
+		if e.Msg != "" {
+			fmt.Fprintf(&body, " %s", e.Msg)
+		}
+		body.WriteString("\n")
 		fmt.Fprintf(&body, "var Err%s = &ProgramError{Code: %d, Name: %q, Msg: %q}\n\n",
-			goName(e.Name), e.Code, e.Name, e.Msg)
+			name, e.Code, e.Name, e.Msg)
 	}
 
 	fmt.Fprintf(&body, "// ErrorByCode returns the ProgramError matching the given numeric\n")
