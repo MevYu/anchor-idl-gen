@@ -1,0 +1,93 @@
+{
+  "address": "Vau1tXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "metadata": {
+    "name": "vault",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "discriminator": [175, 175, 109, 31, 13, 152, 155, 237],
+      "accounts": [
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              { "kind": "const", "value": "vault" },
+              { "kind": "account", "path": "authority" }
+            ]
+          }
+        },
+        { "name": "authority", "signer": true, "writable": true },
+        { "name": "systemProgram", "address": "11111111111111111111111111111111" }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit",
+      "discriminator": [242, 35, 198, 137, 82, 225, 242, 182],
+      "accounts": [
+        { "name": "vault", "writable": true },
+        { "name": "depositor", "signer": true, "writable": true }
+      ],
+      "args": [
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [183, 18, 70, 156, 148, 109, 161, 34],
+      "accounts": [
+        { "name": "vault", "writable": true },
+        { "name": "authority", "signer": true, "writable": true }
+      ],
+      "args": [
+        { "name": "amount", "type": "u64" }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "VaultState",
+      "discriminator": [228, 196, 82, 165, 98, 210, 235, 152],
+      "docs": ["On-chain vault state tracking authority and balance."]
+    }
+  ],
+  "types": [
+    {
+      "name": "VaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "authority", "type": "pubkey" },
+          { "name": "balance",   "type": "u64" },
+          { "name": "bump",      "type": "u8" }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "Deposited",
+      "discriminator": [111, 141, 26, 45, 161, 35, 100, 57],
+      "fields": [
+        { "name": "depositor", "type": "pubkey" },
+        { "name": "amount",    "type": "u64" }
+      ]
+    },
+    {
+      "name": "Withdrawn",
+      "discriminator": [20, 89, 223, 198, 194, 124, 219, 13],
+      "fields": [
+        { "name": "authority", "type": "pubkey" },
+        { "name": "amount",    "type": "u64" }
+      ]
+    }
+  ],
+  "errors": [
+    { "code": 6000, "name": "InsufficientFunds", "msg": "Insufficient funds in vault" },
+    { "code": 6001, "name": "Unauthorized",      "msg": "Not the vault authority" }
+  ]
+}
